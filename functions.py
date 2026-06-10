@@ -1,7 +1,5 @@
 from datetime import date
 from PyQt5.QtWidgets import QListWidget, QMessageBox
-import smtplib
-from email.mime.text import MIMEText
 from database import c, conn
 import re
 
@@ -328,21 +326,56 @@ def update_customer(customer_listbox: QListWidget, name_input, phone_input, emai
         themed_message.warning(None, "Uyarı", "Müşteri seçilmedi.")
 
 def send_bulk_email(subject, body, sender_email, sender_password):
+    """Eski arayüz — geriye dönük uyumluluk için bırakıldı."""
     c.execute("SELECT email FROM Customers WHERE email IS NOT NULL AND email != ''")
     recipients = [row[0] for row in c.fetchall()]
+    ok, _ = send_bulk_email_to_list(subject, body, recipients)
+    return ok
 
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = sender_email
 
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            for recipient in recipients:
-                msg['To'] = recipient
-                server.sendmail(sender_email, recipient, msg.as_string())
-        return True
-    except Exception as e:
-        print("Mail gönderim hatası:", e)
-        return False
+def send_bulk_email_to_list(subject, body, recipients, **kwargs):
+    """
+    Gmail API (OAuth2) üzerinden verilen alıcı listesine mail gönderir.
+    İlk çalıştırmada tarayıcı üzerinden Google girişi yapılır.
+    Returns: (bool success, str message)
+    """
+    if not recipients:
+        return False, "Gönderilecek alıcı bulunamadı."
+
+    from gmail_auth import send_via_gmail_api
+    return send_via_gmail_api(subject, body, recipients)
+
+
+def get_top_spenders(cutoff_date: str, limit: int = 10):
+    """
+    cutoff_date sonrasındaki harcamalara göre müşterileri sıralar.
+    Returns list of (customer_id, name, email, total_amount)
+    """
+    c.execute("""
+        SELECT c.customer_id, c.name, c.email, COALESCE(SUM(p.amount), 0) AS total
+        FROM Customers c
+        LEFT JOIN Purchases p
+            ON c.customer_id = p.customer_id
+           AND p.purchase_date >= ?
+        GROUP BY c.customer_id
+        HAVING total > 0
+        ORDER BY total DESC
+        LIMIT ?
+    """, (cutoff_date, limit))
+    return c.fetchall()
+
+
+def search_customers(query: str):
+    """
+    Ad, telefon veya e-posta ile arama yapar.
+    Returns list of (name, phone, email, register_date)
+    """
+    q = f"%{query}%"
+    c.execute("""
+        SELECT name, phone_number, email, register_date
+        FROM Customers
+        WHERE name LIKE ? OR phone_number LIKE ? OR email LIKE ?
+        ORDER BY name
+        LIMIT 50
+    """, (q, q, q))
+    return c.fetchall()
